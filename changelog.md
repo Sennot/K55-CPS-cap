@@ -1,3 +1,5 @@
+# Release 3.0.1
+- Added a toggle to hide the "CPS capped" notification on level complete.
 # Release 3.0.0
 - Full codebase whipe and rewrite from scratch along with Removing the progress bar offsetting and the option to cap keys seperatly
 # Release 2.1.0

@@ -229,7 +229,7 @@ class $modify(CappedPlayLayer, PlayLayer) {
     void levelComplete() {
         PlayLayer::levelComplete();
 
-        if (cappedThisAttempt) {
+        if (cappedThisAttempt && Mod::get()->getSavedValue<bool>("show-notification", true)) {
             Notification::create("CPS capped", NotificationIcon::Info)->show();
             cappedThisAttempt = false;
         }
@@ -364,8 +364,9 @@ protected:
         m_fracSlider->setPosition({150.f, 126.f});
         m_mainLayer->addChild(m_fracSlider);
 
-        addToggle(menu, "Enable CPS Cap", "enabled", true, 78.f);
-        addToggle(menu, "Debounce", "debounce", false, 49.f);
+        addToggle(menu, "Enable CPS Cap", "enabled", true, 88.f);
+        addToggle(menu, "Debounce", "debounce", false, 61.f);
+        addToggle(menu, "Capped Notification", "show-notification", true, 34.f);
 
         refreshCps(true);
         refreshFrac(true);
