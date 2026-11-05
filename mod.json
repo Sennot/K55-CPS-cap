@@ -8,7 +8,7 @@
   },
   "id": "natha.cps-cap",
   "name": "CPS Cap",
-  "version": "v3.0.1",
+  "version": "v3.1.0",
   "developers": [
     "wZoinkoff",
     "Anticroom"
@@ -19,6 +19,18 @@
     "gameplay",
     "utility"
   ],
+  "settings": {
+    "open-menu": {
+      "type": "keybind",
+      "name": "Open Menu",
+      "default": "Insert"
+    },
+    "toggle-cap": {
+      "type": "keybind",
+      "name": "Toggle CPS Cap",
+      "default": "Delete"
+    }
+  },
   "resources": {
     "sprites": [
       "resources/MenuCap.png"

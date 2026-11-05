@@ -26,5 +26,17 @@ endif()
 
 add_subdirectory($ENV{GEODE_SDK} ${CMAKE_CURRENT_BINARY_DIR}/geode)
 
+# Dear ImGui for cocos2d-x (MIT, matcool/gd-imgui-cocos), drawn on top of the game.
+CPMAddPackage(
+    NAME imgui-cocos
+    GITHUB_REPOSITORY matcool/gd-imgui-cocos
+    GIT_TAG b93f08ccef778a53ebba09b20c347f6a63980119
+    OPTIONS "IMGUI_HOOK_EARLY OFF"
+)
+
+target_include_directories(${PROJECT_NAME} PRIVATE src)
+target_compile_definitions(${PROJECT_NAME} PRIVATE NOMINMAX IMGUI_DEFINE_MATH_OPERATORS)
+target_link_libraries(${PROJECT_NAME} imgui-cocos)
+
 # Set up dependencies, resources, and link Geode.
 setup_geode_mod(${PROJECT_NAME})

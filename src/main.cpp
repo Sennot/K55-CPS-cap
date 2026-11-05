@@ -1,10 +1,17 @@
+#include "Config.hpp"
+#include "Ui.hpp"
+
 #include <Geode/Geode.hpp>
+#include <Geode/loader/SettingV3.hpp>
+#include <Geode/modify/CCScheduler.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
 #include <Geode/modify/PlayerObject.hpp>
-#include <Geode/modify/PauseLayer.hpp>
 #include <Geode/ui/Notification.hpp>
-#include <Geode/ui/Popup.hpp>
+
+#ifdef GEODE_IS_MOBILE
+#include <Geode/modify/PauseLayer.hpp>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -12,45 +19,9 @@
 #include <unordered_map>
 
 using namespace geode::prelude;
+using namespace cap;
 
 namespace {
-
-struct Options {
-    bool enabled;
-    bool perButton;
-    bool debounce;
-    double pressLock;
-    double releaseLock;
-};
-
-constexpr double DEFAULT_MAX_CPS = 16.6667;
-constexpr double DEFAULT_HOLD_FRACTION = 0.5;
-
-Options loadOptions() {
-    auto mod = Mod::get();
-    Options o;
-    o.enabled = mod->getSavedValue<bool>("enabled", true);
-    // o.perButton = mod->getSavedValue<bool>("per-button", false);
-    o.perButton = false;
-    o.debounce = mod->getSavedValue<bool>("debounce", false);
-
-    auto maxCps = std::max(0.1, mod->getSavedValue<double>("max-cps", DEFAULT_MAX_CPS));
-    auto holdFraction = std::clamp(
-        mod->getSavedValue<double>("hold-fraction", DEFAULT_HOLD_FRACTION), 0.1, 0.9
-    );
-    auto period = 1.0 / maxCps;
-    o.pressLock = period * holdFraction;
-    o.releaseLock = period * (1.0 - holdFraction);
-    return o;
-}
-
-// int buttonSlot(PlayerButton button) {
-//     switch (button) {
-//         case PlayerButton::Left: return 1;
-//         case PlayerButton::Right: return 2;
-//         default: return 0;
-//     }
-// }
 
 struct Gate {
     bool held = false;
@@ -60,17 +31,32 @@ struct Gate {
 };
 
 struct PlayerGates {
-    Gate perButton[3];
-    Gate shared;
+    Gate gates[SlotCount];
 };
 
 std::unordered_map<PlayerObject*, PlayerGates> gates;
+// Separate gates per button are only switched on/off between attempts.
+bool perButtonActive = false;
 uint64_t frameCount = 0;
 double medianFrameTime = 1.0 / 240.0;
 std::array<float, 9> frameTimes{};
 size_t frameTimeIndex = 0;
 bool replaying = false;
 bool cappedThisAttempt = false;
+
+void resetGates() {
+    gates.clear();
+    perButtonActive = config().perButton;
+    cappedThisAttempt = false;
+}
+
+int buttonSlot(PlayerButton button) {
+    switch (button) {
+        case PlayerButton::Left: return Left;
+        case PlayerButton::Right: return Right;
+        default: return Jump;
+    }
+}
 
 void trackFrameTime(float dt) {
     frameTimes[frameTimeIndex % frameTimes.size()] = dt;
@@ -96,46 +82,46 @@ double carryUnlock(double unlockFrame) {
         : static_cast<double>(frameCount);
 }
 
-void resetIfChanged(Options const& o) {
-    static double lastPress = 0.0;
-    static double lastRelease = 0.0;
-    static bool lastPerButton = false;
-    static bool lastDebounce = false;
-
-    if (o.pressLock != lastPress || o.releaseLock != lastRelease
-        || o.perButton != lastPerButton || o.debounce != lastDebounce) {
-        lastPress = o.pressLock;
-        lastRelease = o.releaseLock;
-        lastPerButton = o.perButton;
-        lastDebounce = o.debounce;
-        gates.clear();
-    }
+float currentPercent() {
+    auto pl = PlayLayer::get();
+    return pl ? pl->getCurrentPercent() : 0.f;
 }
 
-// Gate& pickGate(PlayerGates& pg, PlayerButton button, bool perButton) {
-//     return perButton ? pg.perButton[buttonSlot(button)] : pg.shared;
-// }
+Segment const& activeSegment() {
+    return segmentAt(currentPercent());
+}
+
+ButtonCap const& buttonCap(Segment const& seg, int slot) {
+    return seg.buttons[perButtonActive ? slot : Jump];
+}
 
 bool filterEdge(PlayerObject* player, PlayerButton button, bool press) {
     if (replaying) {
         return true;
     }
 
-    auto options = loadOptions();
-    if (!options.enabled) {
+    int slot = buttonSlot(button);
+    auto& gate = gates[player].gates[perButtonActive ? slot : Jump];
+    auto const& seg = activeSegment();
+
+    if (!config().enabled || !seg.cap) {
+        // Keep the gate in sync with the real input so capping can resume mid-hold.
+        gate.held = press;
+        gate.queued = false;
         return true;
     }
-    resetIfChanged(options);
 
-    auto& gate = gates[player].shared;
+    auto const& btn = buttonCap(seg, slot);
 
-    if (options.debounce) {
+    if (seg.debounce) {
         if (!press) {
+            gate.held = false;
             return true;
         }
         if (unlocked(gate.unlockFrame)) {
+            gate.held = true;
             gate.unlockFrame = carryUnlock(gate.unlockFrame)
-                + toFrames(options.pressLock + options.releaseLock);
+                + toFrames(btn.pressLock() + btn.releaseLock());
             return true;
         }
         cappedThisAttempt = true;
@@ -146,7 +132,7 @@ bool filterEdge(PlayerObject* player, PlayerButton button, bool press) {
         gate.held = press;
         gate.pendingButton = button;
         gate.unlockFrame = carryUnlock(gate.unlockFrame)
-            + toFrames(press ? options.pressLock : options.releaseLock);
+            + toFrames(press ? btn.pressLock() : btn.releaseLock());
         return true;
     }
 
@@ -165,11 +151,12 @@ bool filterEdge(PlayerObject* player, PlayerButton button, bool press) {
     return false;
 }
 
-void flushGate(Gate& gate, PlayerObject* player, Options const& options) {
+void flushGate(Gate& gate, PlayerObject* player, Segment const& seg) {
     while (gate.queued && unlocked(gate.unlockFrame)) {
         gate.held = !gate.held;
         gate.queued = false;
-        gate.unlockFrame += toFrames(gate.held ? options.pressLock : options.releaseLock);
+        auto const& btn = buttonCap(seg, buttonSlot(gate.pendingButton));
+        gate.unlockFrame += toFrames(gate.held ? btn.pressLock() : btn.releaseLock());
 
         replaying = true;
         if (gate.held) {
@@ -181,25 +168,45 @@ void flushGate(Gate& gate, PlayerObject* player, Options const& options) {
     }
 }
 
-void flushPlayer(PlayerObject* player, Options const& options) {
+void flushPlayer(PlayerObject* player, Segment const& seg) {
     auto it = gates.find(player);
     if (it == gates.end()) {
         return;
     }
-    auto& pg = it->second;
+    for (auto& gate : it->second.gates) {
+        flushGate(gate, player, seg);
+    }
+}
 
-    // if (options.perButton) {
-    //     for (auto& gate : pg.perButton) {
-    //         flushGate(gate, player, options);
-    //     }
-    // } else {
-        flushGate(pg.shared, player, options);
-    // }
+void toggleCap() {
+    auto& c = config();
+    c.enabled = !c.enabled;
+    save();
+    if (c.toggleNotify) {
+        Notification::create(
+            c.enabled ? "CPS Cap: ON" : "CPS Cap: OFF",
+            c.enabled ? NotificationIcon::Success : NotificationIcon::Error,
+            0.6f
+        )->show();
+    }
 }
 
 }
 
-// i am adding a comment here just to let you know that there is code below me
+$on_mod(Loaded) {
+    cap::load();
+    perButtonActive = config().perButton;
+    cap::ui::init();
+}
+
+$on_game(Loaded) {
+    listenForKeybindSettingPresses("open-menu", [](Keybind const&, bool down, bool repeat, double) {
+        if (down && !repeat) cap::ui::toggle();
+    });
+    listenForKeybindSettingPresses("toggle-cap", [](Keybind const&, bool down, bool repeat, double) {
+        if (down && !repeat) toggleCap();
+    });
+}
 
 class $modify(CappedBaseLayer, GJBaseGameLayer) {
     void update(float dt) {
@@ -208,11 +215,11 @@ class $modify(CappedBaseLayer, GJBaseGameLayer) {
             trackFrameTime(dt);
         }
 
-        auto options = loadOptions();
-        if (options.enabled && !gates.empty()) {
-            resetIfChanged(options);
-            if (m_player1) flushPlayer(m_player1, options);
-            if (m_player2) flushPlayer(m_player2, options);
+        // Queued edges are replayed even with the cap off so no press/release gets lost.
+        if (!gates.empty()) {
+            auto const& seg = activeSegment();
+            if (m_player1) flushPlayer(m_player1, seg);
+            if (m_player2) flushPlayer(m_player2, seg);
         }
 
         GJBaseGameLayer::update(dt);
@@ -221,209 +228,45 @@ class $modify(CappedBaseLayer, GJBaseGameLayer) {
 
 class $modify(CappedPlayLayer, PlayLayer) {
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
-        gates.clear();
-        cappedThisAttempt = false;
+        resetGates();
         return PlayLayer::init(level, useReplay, dontCreateObjects);
     }
 
     void levelComplete() {
         PlayLayer::levelComplete();
 
-        if (cappedThisAttempt && Mod::get()->getSavedValue<bool>("show-notification", true)) {
+        if (cappedThisAttempt && config().notify) {
             Notification::create("CPS capped", NotificationIcon::Info)->show();
-            cappedThisAttempt = false;
         }
+        cappedThisAttempt = false;
     }
 
     void resetLevel() {
-        gates.clear();
-        cappedThisAttempt = false;
+        resetGates();
         PlayLayer::resetLevel();
     }
 
     void resetLevelFromStart() {
-        gates.clear();
-        cappedThisAttempt = false;
+        resetGates();
         PlayLayer::resetLevelFromStart();
     }
 
     void onQuit() {
-        gates.clear();
-        cappedThisAttempt = false;
+        resetGates();
+        cap::ui::close();
         PlayLayer::onQuit();
     }
 };
 
-class CPSCapPopup : public geode::Popup {
-protected:
-    TextInput* m_cpsInput = nullptr;
-    TextInput* m_fracInput = nullptr;
-    Slider* m_cpsSlider = nullptr;
-    Slider* m_fracSlider = nullptr;
-
-    static double cpsFromSlider(float v) {
-        return 1.0 + static_cast<double>(v) * 239.0;
-    }
-    static float sliderFromCps(double cps) {
-        return static_cast<float>(std::clamp((cps - 1.0) / 239.0, 0.0, 1.0));
-    }
-    static double fracFromSlider(float v) {
-        return 0.1 + static_cast<double>(v) * 0.8;
-    }
-    static float sliderFromFrac(double frac) {
-        return static_cast<float>(std::clamp((frac - 0.1) / 0.8, 0.0, 1.0));
-    }
-
-    void refreshCps(bool updateSlider) {
-        auto cps = Mod::get()->getSavedValue<double>("max-cps", DEFAULT_MAX_CPS);
-        m_cpsInput->setString(fmt::format("{:.2f}", cps));
-        if (updateSlider) {
-            m_cpsSlider->setValue(sliderFromCps(cps));
-        }
-    }
-
-    void refreshFrac(bool updateSlider) {
-        auto frac = Mod::get()->getSavedValue<double>("hold-fraction", DEFAULT_HOLD_FRACTION);
-        m_fracInput->setString(fmt::format("{:.0f}", frac * 100.0));
-        if (updateSlider) {
-            m_fracSlider->setValue(sliderFromFrac(frac));
-        }
-    }
-
-    CCMenuItemToggler* addToggle(
-        CCMenu* menu, char const* label, char const* key, bool def, float y
-    ) {
-        auto toggle = CCMenuItemToggler::createWithStandardSprites(
-            this, menu_selector(CPSCapPopup::onToggle), 0.7f
-        );
-        toggle->setUserObject(CCString::create(key));
-        toggle->toggle(Mod::get()->getSavedValue<bool>(key, def));
-        toggle->setPosition({45.f, y});
-        menu->addChild(toggle);
-
-        auto text = CCLabelBMFont::create(label, "bigFont.fnt");
-        text->setScale(0.45f);
-        text->setAnchorPoint({0.f, 0.5f});
-        text->setPosition({65.f, y});
-        m_mainLayer->addChild(text);
-        return toggle;
-    }
-
-    bool init() {
-        if (!Popup::init(320.f, 260.f)) {
-            return false;
-        }
-        this->setTitle("CPS Cap");
-        auto menu = m_buttonMenu;
-
-        auto cpsLabel = CCLabelBMFont::create("Max CPS", "bigFont.fnt");
-        cpsLabel->setScale(0.45f);
-        cpsLabel->setAnchorPoint({0.f, 0.5f});
-        cpsLabel->setPosition({65.f, 216.f});
-        m_mainLayer->addChild(cpsLabel);
-
-        m_cpsInput = TextInput::create(70.f, "16.67");
-        m_cpsInput->setCommonFilter(CommonFilter::Float);
-        m_cpsInput->setMaxCharCount(7);
-        m_cpsInput->setScale(0.8f);
-        m_cpsInput->setPosition({250.f, 216.f});
-        m_cpsInput->setCallback([this](std::string const& str) {
-            this->onCpsInput(str);
-        });
-        m_mainLayer->addChild(m_cpsInput);
-
-        m_cpsSlider = Slider::create(this, menu_selector(CPSCapPopup::onCpsSlider), 0.8f);
-        m_cpsSlider->setPosition({150.f, 188.f});
-        m_mainLayer->addChild(m_cpsSlider);
-
-        auto k55Spr = CCSprite::createWithSpriteFrameName("geode.loader/reset-gold.png");
-        k55Spr->setScale(0.7f);
-        auto k55Btn = CCMenuItemSpriteExtra::create(
-            k55Spr, this, menu_selector(CPSCapPopup::onK55Reset)
-        );
-        k55Btn->setPosition({258.f, 188.f});
-        menu->addChild(k55Btn);
-
-        auto fracLabel = CCLabelBMFont::create("Press/Release Split", "bigFont.fnt");
-        fracLabel->setScale(0.45f);
-        fracLabel->setAnchorPoint({0.f, 0.5f});
-        fracLabel->setPosition({65.f, 154.f});
-        m_mainLayer->addChild(fracLabel);
-
-        m_fracInput = TextInput::create(70.f, "50");
-        m_fracInput->setCommonFilter(CommonFilter::Uint);
-        m_fracInput->setMaxCharCount(2);
-        m_fracInput->setScale(0.8f);
-        m_fracInput->setPosition({250.f, 154.f});
-        m_fracInput->setCallback([this](std::string const& str) {
-            this->onFracInput(str);
-        });
-        m_mainLayer->addChild(m_fracInput);
-
-        m_fracSlider = Slider::create(this, menu_selector(CPSCapPopup::onFracSlider), 0.8f);
-        m_fracSlider->setPosition({150.f, 126.f});
-        m_mainLayer->addChild(m_fracSlider);
-
-        addToggle(menu, "Enable CPS Cap", "enabled", true, 88.f);
-        addToggle(menu, "Debounce", "debounce", false, 61.f);
-        addToggle(menu, "Capped Notification", "show-notification", true, 34.f);
-
-        refreshCps(true);
-        refreshFrac(true);
-        return true;
-    }
-
-    void onToggle(CCObject* sender) {
-        auto toggle = static_cast<CCMenuItemToggler*>(sender);
-        auto key = static_cast<CCString*>(toggle->getUserObject())->getCString();
-        Mod::get()->setSavedValue<bool>(key, !toggle->isToggled());
-    }
-
-    void onCpsSlider(CCObject* sender) {
-        auto value = static_cast<SliderThumb*>(sender)->getValue();
-        Mod::get()->setSavedValue<double>("max-cps", cpsFromSlider(value));
-        refreshCps(false);
-    }
-
-    void onFracSlider(CCObject* sender) {
-        auto value = static_cast<SliderThumb*>(sender)->getValue();
-        Mod::get()->setSavedValue<double>("hold-fraction", fracFromSlider(value));
-        refreshFrac(false);
-    }
-
-    void onCpsInput(std::string const& str) {
-        if (auto num = numFromString<double>(str)) {
-            auto cps = std::clamp(*num, 1.0, 240.0);
-            Mod::get()->setSavedValue<double>("max-cps", cps);
-            m_cpsSlider->setValue(sliderFromCps(cps));
-        }
-    }
-
-    void onFracInput(std::string const& str) {
-        if (auto num = numFromString<double>(str)) {
-            auto frac = std::clamp(*num / 100.0, 0.1, 0.9);
-            Mod::get()->setSavedValue<double>("hold-fraction", frac);
-            m_fracSlider->setValue(sliderFromFrac(frac));
-        }
-    }
-
-    void onK55Reset(CCObject*) {
-        Mod::get()->setSavedValue<double>("max-cps", DEFAULT_MAX_CPS);
-        refreshCps(true);
-    }
-
-public:
-    static CPSCapPopup* create() {
-        auto ret = new CPSCapPopup();
-        if (ret->init()) {
-            ret->autorelease();
-            return ret;
-        }
-        delete ret;
-        return nullptr;
+class $modify(CappedScheduler, CCScheduler) {
+    void update(float dt) {
+        cap::ui::tick();
+        CCScheduler::update(dt);
     }
 };
 
+#ifdef GEODE_IS_MOBILE
+// No keyboard on mobile, so the menu stays reachable from the pause menu there.
 class $modify(CappedPauseLayer, PauseLayer) {
     void customSetup() {
         PauseLayer::customSetup();
@@ -443,9 +286,10 @@ class $modify(CappedPauseLayer, PauseLayer) {
     }
 
     void onCPSCap(CCObject*) {
-        CPSCapPopup::create()->show();
+        cap::ui::open();
     }
 };
+#endif
 
 class $modify(CappedPlayerObject, PlayerObject) {
     bool pushButton(PlayerButton button) {

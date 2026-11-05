@@ -5,6 +5,8 @@ This is a recreation of the K55 CPS cap, with the hardware limitations found in 
 
 This also allows you to change the CPS cap to anything which may match other known input devices with similar hardware limitations if needed.
 
+Press **Insert** to open the menu (the key can be changed in the mod settings). There you can set a different cap for jump/left/right and change the cap from any level percent. **Delete** toggles the cap on/off.
+
 ---
 
 ### Credits

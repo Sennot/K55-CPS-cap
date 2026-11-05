@@ -1,3 +1,8 @@
+# Release 3.1.0
+- Settings moved into a menu opened with Insert (the key can be changed in the mod settings), the pause menu button is gone on PC.
+- Segments: the cap, press/release split, debounce and cap on/off can change at any level percent.
+- Separate cap for jump, left and right.
+- Keybind to toggle the cap on/off (Delete by default).
 # Release 3.0.1
 - Added a toggle to hide the "CPS capped" notification on level complete.
 # Release 3.0.0
