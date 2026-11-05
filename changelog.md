@@ -1,3 +1,5 @@
+# Release 3.1.1
+- Exact number fields next to the CPS, split and percent sliders.
 # Release 3.1.0
 - Settings moved into a menu opened with Insert (the key can be changed in the mod settings), the pause menu button is gone on PC.
 - Segments: the cap, press/release split, debounce and cap on/off can change at any level percent.

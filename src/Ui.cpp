@@ -184,19 +184,41 @@ bool sliderSplit(char const* id, double& split, float width) {
     return false;
 }
 
+// Typed value next to a slider, for exact numbers.
+bool numberInput(char const* id, double& v, double lo, double hi, char const* format, float width) {
+    double tmp = v;
+    ImGui::SetNextItemWidth(width);
+    if (ImGui::InputScalar(id, ImGuiDataType_Double, &tmp, nullptr, nullptr, format)) {
+        v = std::clamp(tmp, lo, hi);
+        return true;
+    }
+    return false;
+}
+
+float inputWidth() { return px(64); }
+
 bool buttonEditor(char const* label, ButtonCap& b, float width) {
     bool changed = false;
     ImGui::PushID(label);
     ImGui::TextUnformatted(label);
+    float sp = ImGui::GetStyle().ItemSpacing.x;
     float k55w = ImGui::CalcTextSize("K55").x + ImGui::GetStyle().FramePadding.x * 2;
-    float sliderW = width - k55w - ImGui::GetStyle().ItemSpacing.x;
-    changed |= sliderCps("##cps", b.cps, sliderW);
+    float inW = inputWidth();
+    changed |= sliderCps("##cps", b.cps, width - inW - k55w - sp * 2);
+    ImGui::SameLine();
+    changed |= numberInput("##cpsIn", b.cps, MIN_CPS, MAX_CPS, "%.4f", inW);
     ImGui::SameLine();
     if (ImGui::Button("K55")) {
         b.cps = K55_CPS;
         changed = true;
     }
-    changed |= sliderSplit("##split", b.split, width);
+    changed |= sliderSplit("##split", b.split, width - inW - k55w - sp * 2);
+    ImGui::SameLine();
+    double pct = b.split * 100.0;
+    if (numberInput("##splitIn", pct, MIN_SPLIT * 100.0, MAX_SPLIT * 100.0, "%.1f", inW)) {
+        b.split = pct / 100.0;
+        changed = true;
+    }
     ImGui::PopID();
     return changed;
 }
@@ -263,8 +285,16 @@ void drawSegment(float width) {
 
     auto box = boxBegin("segment", width);
     ImGui::BeginDisabled(g.selected == 0);
-    ImGui::SetNextItemWidth(inner);
-    if (ImGui::SliderFloat("##from", &s.from, 0.f, 100.f, "from %.1f%%", ImGuiSliderFlags_AlwaysClamp)) {
+    float inW = inputWidth();
+    ImGui::SetNextItemWidth(inner - inW - ImGui::GetStyle().ItemSpacing.x);
+    bool fromChanged = ImGui::SliderFloat("##from", &s.from, 0.f, 100.f, "from %.2f%%", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SameLine();
+    double from = s.from;
+    if (numberInput("##fromIn", from, 0.0, 100.0, "%.2f", inW)) {
+        s.from = static_cast<float>(from);
+        fromChanged = true;
+    }
+    if (fromChanged) {
         resortSelected();
         changed = true;
     }
@@ -315,7 +345,7 @@ void drawWindow() {
     float percent = livePercent(inLevel);
     int active = segmentIndexAt(percent);
 
-    float leftW = px(210), rightW = px(280);
+    float leftW = px(210), rightW = px(320);
     float spacing = ImGui::GetStyle().ItemSpacing.x * 2;
 
     ImGui::PushFont(g_bold, std::round(fontSize() * 1.15f));
